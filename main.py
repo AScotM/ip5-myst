@@ -8,13 +8,13 @@ import subprocess
 import random
 import json
 import math
+import threading
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
-from collections import deque, defaultdict
+from collections import deque
 import curses
-import curses.textpad
 import atexit
 
 class GlyphType(Enum):
@@ -89,6 +89,9 @@ class NetworkEntity:
             self.whispers.pop(0)
     
     def update_glyphs(self):
+        if len(self.glyphs) > 20:
+            self.glyphs = self.glyphs[-20:]
+            
         active_glyphs = []
         for glyph in self.glyphs:
             glyph.age += 1
@@ -133,26 +136,33 @@ class NetworkEntity:
             ))
 
 class MysticConfig:
+    UPDATE_INTERVAL = 1.0
+    GLYPH_DENSITY = 0.3
+    MAX_SPIRITS = 20
+    RITUAL_TIMEOUT = 30
+    
     def __init__(self):
-        self.update_interval = 1.0
-        self.glyph_density = 0.3
+        self.update_interval = self.UPDATE_INTERVAL
+        self.glyph_density = self.GLYPH_DENSITY
         self.show_whispers = True
         self.show_aura = True
         self.ancient_script = True
         self.encrypt_logs = False
         self.log_file = "network_mysteries.log"
-        self.ritual_timeout = 30
-        self.max_spirits = 20
+        self.ritual_timeout = self.RITUAL_TIMEOUT
+        self.max_spirits = self.MAX_SPIRITS
         self.show_loopback = False
         
     def load_from_file(self, path: str):
         try:
+            if not os.path.exists(path) or not os.path.isfile(path):
+                return
             with open(path, 'r') as f:
                 data = json.load(f)
                 for key, value in data.items():
                     if hasattr(self, key):
                         setattr(self, key, value)
-        except FileNotFoundError:
+        except Exception:
             pass
 
 class AncientScript:
@@ -204,7 +214,7 @@ class WhisperCollector:
     def __init__(self):
         self.whispers = deque(maxlen=100)
         
-    def add_whisper(self, source: str, message: str, level: str = "INFO"):
+    def add_whisper(self, source: str, message: str, level: str = "INFO") -> str:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         whisper = f"[{timestamp}] [{level}] {source}: {message}"
         self.whispers.append(whisper)
@@ -221,6 +231,7 @@ class NetworkMystic:
         self.last_update = time.time()
         self.running = False
         self.colors = {}
+        self._lock = threading.Lock()
         self.init_rituals()
         
     def init_rituals(self):
@@ -232,24 +243,27 @@ class NetworkMystic:
         ]
     
     def init_colors(self):
-        curses.start_color()
-        curses.use_default_colors()
-        
-        color_pairs = [
-            (1, curses.COLOR_BLUE, curses.COLOR_BLACK),
-            (2, curses.COLOR_CYAN, curses.COLOR_BLACK),
-            (3, curses.COLOR_GREEN, curses.COLOR_BLACK),
-            (4, curses.COLOR_MAGENTA, curses.COLOR_BLACK),
-            (5, curses.COLOR_YELLOW, curses.COLOR_BLACK),
-            (6, curses.COLOR_RED, curses.COLOR_BLACK),
-            (7, curses.COLOR_WHITE, curses.COLOR_BLACK),
-        ]
-        
-        for pair_id, fg, bg in color_pairs:
-            curses.init_pair(pair_id, fg, bg)
-            self.colors[pair_id] = curses.color_pair(pair_id)
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+            
+            color_pairs = [
+                (1, curses.COLOR_BLUE, curses.COLOR_BLACK),
+                (2, curses.COLOR_CYAN, curses.COLOR_BLACK),
+                (3, curses.COLOR_GREEN, curses.COLOR_BLACK),
+                (4, curses.COLOR_MAGENTA, curses.COLOR_BLACK),
+                (5, curses.COLOR_YELLOW, curses.COLOR_BLACK),
+                (6, curses.COLOR_RED, curses.COLOR_BLACK),
+                (7, curses.COLOR_WHITE, curses.COLOR_BLACK),
+            ]
+            
+            for pair_id, fg, bg in color_pairs:
+                curses.init_pair(pair_id, fg, bg)
+                self.colors[pair_id] = curses.color_pair(pair_id)
+        except:
+            self.colors = {i: curses.A_NORMAL for i in range(1, 8)}
     
-    def _ritual_moon_cycle(self):
+    def _ritual_moon_cycle(self) -> str:
         now = time.time()
         moon_cycle = (now % 2419200) / 2419200
         
@@ -262,7 +276,7 @@ class NetworkMystic:
         else:
             return "Waning Moon: Paths fade"
     
-    def _ritual_tide_change(self):
+    def _ritual_tide_change(self) -> str:
         tide = math.sin(time.time() / 3600)
         
         if tide > 0.7:
@@ -272,7 +286,7 @@ class NetworkMystic:
         else:
             return "Changing Tide: Flux in patterns"
     
-    def _ritual_star_alignment(self):
+    def _ritual_star_alignment(self) -> str:
         alignments = [
             "Stars favor communication",
             "Constellations whisper of packets",
@@ -282,7 +296,7 @@ class NetworkMystic:
         ]
         return random.choice(alignments)
     
-    def _ritual_wind_shift(self):
+    def _ritual_wind_shift(self) -> str:
         winds = [
             "Northern Wind: Cold data streams",
             "Southern Wind: Warm connections",
@@ -380,10 +394,15 @@ class NetworkMystic:
                     if ip and ip != '127.0.0.1':
                         ips.append(ip)
             return ips
-        except:
+        except subprocess.TimeoutExpired:
+            return []
+        except Exception:
             return []
     
     def draw_veil_border(self, screen, height, width):
+        if width < 2 or height < 2:
+            return
+            
         border_chars = ["╔", "╗", "╚", "╝", "═", "║"]
         
         for y in range(height):
@@ -605,52 +624,57 @@ class NetworkMystic:
             pass
     
     def run_ritual(self, screen):
-        self.init_colors()
-        
-        curses.curs_set(0)
-        curses.noecho()
-        curses.cbreak()
-        screen.nodelay(1)
-        screen.timeout(100)
-        
-        self.running = True
-        self.whispers.add_whisper("Mystic", "Beginning the ritual...", "INFO")
-        
-        while self.running:
-            try:
-                key = screen.getch()
-                
-                if key == ord('q'):
+        try:
+            self.init_colors()
+            
+            curses.curs_set(0)
+            curses.noecho()
+            curses.cbreak()
+            screen.nodelay(1)
+            screen.timeout(100)
+            
+            self.running = True
+            self.whispers.add_whisper("Mystic", "Beginning the ritual...", "INFO")
+            
+            while self.running:
+                try:
+                    key = screen.getch()
+                    
+                    if key == ord('q'):
+                        self.running = False
+                    elif key == ord(' '):
+                        self.perform_rituals()
+                    elif key == ord('r'):
+                        self.whispers.add_whisper("Mystic", "Ritual refreshed", "INFO")
+                    elif key == ord('l'):
+                        self.config.show_loopback = not self.config.show_loopback
+                        status = "shown" if self.config.show_loopback else "hidden"
+                        self.whispers.add_whisper("Mystic", f"Loopback spirits {status}", "INFO")
+                    elif key == ord('a'):
+                        self.config.ancient_script = not self.config.ancient_script
+                        status = "enabled" if self.config.ancient_script else "disabled"
+                        self.whispers.add_whisper("Mystic", f"Ancient script {status}", "INFO")
+                    
+                    current_time = time.time()
+                    time_diff = current_time - self.last_update
+                    
+                    if time_diff >= self.config.update_interval:
+                        self.scan_spirits()
+                        self.perform_rituals()
+                        self.draw_veil(screen)
+                        self.last_update = current_time
+                    
+                    time.sleep(0.01)
+                    
+                except KeyboardInterrupt:
                     self.running = False
-                elif key == ord(' '):
-                    self.perform_rituals()
-                elif key == ord('r'):
-                    self.whispers.add_whisper("Mystic", "Ritual refreshed", "INFO")
-                elif key == ord('l'):
-                    self.config.show_loopback = not self.config.show_loopback
-                    status = "shown" if self.config.show_loopback else "hidden"
-                    self.whispers.add_whisper("Mystic", f"Loopback spirits {status}", "INFO")
-                elif key == ord('a'):
-                    self.config.ancient_script = not self.config.ancient_script
-                    status = "enabled" if self.config.ancient_script else "disabled"
-                    self.whispers.add_whisper("Mystic", f"Ancient script {status}", "INFO")
-                
-                current_time = time.time()
-                time_diff = current_time - self.last_update
-                
-                if time_diff >= self.config.update_interval:
-                    self.scan_spirits()
-                    self.perform_rituals()
-                    self.draw_veil(screen)
-                    self.last_update = current_time
-                
-                time.sleep(0.01)
-                
-            except KeyboardInterrupt:
-                self.running = False
-            except Exception as e:
-                self.whispers.add_whisper("Mystic", f"Error: {str(e)}", "ERROR")
-                time.sleep(1)
+                except Exception as e:
+                    self.whispers.add_whisper("Mystic", f"Error: {str(e)}", "ERROR")
+                    time.sleep(1)
+        finally:
+            curses.nocbreak()
+            curses.echo()
+            curses.endwin()
     
     def save_mysteries(self):
         if not self.config.log_file:
@@ -696,14 +720,18 @@ class NetworkMystic:
         self.whispers.add_whisper("Mystic", "Ritual complete. Veil closing...", "INFO")
         self.save_mysteries()
         
-        print(f"\nMysteries saved to {self.config.log_file}")
-        print("\nMay the flows guide you...")
-        print("\nControls:")
-        print("  q - Quit")
-        print("  Space - Perform ritual")
-        print("  r - Refresh")
-        print("  l - Toggle loopback spirits")
-        print("  a - Toggle ancient script")
+        sys.stderr.write(f"\nMysteries saved to {self.config.log_file}\n")
+        sys.stderr.write("\nMay the flows guide you...\n")
+        sys.stderr.write("\nControls:\n")
+        sys.stderr.write("  q - Quit\n")
+        sys.stderr.write("  Space - Perform ritual\n")
+        sys.stderr.write("  r - Refresh\n")
+        sys.stderr.write("  l - Toggle loopback spirits\n")
+        sys.stderr.write("  a - Toggle ancient script\n")
+    
+    def stop(self):
+        with self._lock:
+            self.running = False
 
 def main():
     config = MysticConfig()
@@ -714,8 +742,8 @@ def main():
     mystic = NetworkMystic(config)
     
     atexit.register(mystic.cleanup)
-    signal.signal(signal.SIGINT, lambda s, f: setattr(mystic, 'running', False))
-    signal.signal(signal.SIGTERM, lambda s, f: setattr(mystic, 'running', False))
+    signal.signal(signal.SIGINT, lambda s, f: mystic.stop())
+    signal.signal(signal.SIGTERM, lambda s, f: mystic.stop())
     
     mystic.start()
 
